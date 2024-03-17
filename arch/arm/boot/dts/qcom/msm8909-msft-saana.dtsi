@@ -162,7 +162,7 @@
 		qcom,disp-maxx = <719>;
 		qcom,disp-maxy = <1279>;
 		qcom,panel-maxx = <719>;
-		qcom,panel-maxy = <1405>;
+		qcom,panel-maxy = <1279>;
 		qcom,key-codes = <158 139 172 217>;
 	};
 
@@ -275,15 +275,8 @@
 		qcom,rpull-up-kohm = <100>;
 		qcom,vref-batt-therm = <1800000>;
 
-		#include "batterydata-bv-t3g.dtsi"
-	};
-};
-/ {
-	mtp_batterydata: qcom,battery-data {
-		qcom,rpull-up-kohm = <100>;
-		qcom,vref-batt-therm = <1800000>;
-
-		#include "batterydata-palladium.dtsi"
+		#include "batterydata-bv-t3g-sdi.dtsi"
+		#include "batterydata-bv-t3g-lgc.dtsi"
 	};
 };
 
@@ -538,28 +531,4 @@
 
     qcom,platform-reset-gpio = <&msm_gpio 25 0>;
     qcom,platform-bklight-en-gpio = <&msm_gpio 37 0>;
-};
-
-/* CoreSight */
-&tpiu {
-    pinctrl-names = "sdcard", "trace", "swduart",
-            "swdtrc", "jtag", "spmi";
-    /* NIDnT */
-    pinctrl-0 = <&qdsd_clk_sdcard &qdsd_cmd_sdcard
-             &qdsd_data0_sdcard &qdsd_data1_sdcard
-             &qdsd_data2_sdcard &qdsd_data3_sdcard>;
-    pinctrl-1 = <&qdsd_clk_trace &qdsd_cmd_trace
-             &qdsd_data0_trace &qdsd_data1_trace
-             &qdsd_data2_trace &qdsd_data3_trace>;
-    pinctrl-2 = <&qdsd_cmd_swduart &qdsd_data0_swduart
-             &qdsd_data1_swduart &qdsd_data2_swduart
-             &qdsd_data3_swduart>;
-    pinctrl-3 = <&qdsd_clk_swdtrc &qdsd_cmd_swdtrc
-             &qdsd_data0_swdtrc &qdsd_data1_swdtrc
-             &qdsd_data2_swdtrc &qdsd_data3_swdtrc>;
-    pinctrl-4 = <&qdsd_cmd_jtag &qdsd_data0_jtag
-             &qdsd_data1_jtag &qdsd_data2_jtag
-             &qdsd_data3_jtag>;
-    pinctrl-5 = <&qdsd_clk_spmi &qdsd_cmd_spmi
-             &qdsd_data0_spmi &qdsd_data3_spmi>;
 };
