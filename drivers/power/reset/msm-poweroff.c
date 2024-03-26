@@ -60,28 +60,17 @@ static void scm_disable_sdi(void);
 * There is no API from TZ to re-enable the registers.
 * So the SDI cannot be re-enabled when it already by-passed.
 */
-static int download_mode = 1;
+//  disable download_mode by default
+static int download_mode = 0;
 #else
 static const int download_mode;
 #endif
-
-static int in_panic;
-
-static int panic_prep_restart(struct notifier_block *this,
-			      unsigned long event, void *ptr)
-{
-	in_panic = 1;
-	return NOTIFY_DONE;
-}
-
-static struct notifier_block panic_blk = {
-	.notifier_call	= panic_prep_restart,
-};
 
 #ifdef CONFIG_MSM_DLOAD_MODE
 #define EDL_MODE_PROP "qcom,msm-imem-emergency_download_mode"
 #define DL_MODE_PROP "qcom,msm-imem-download_mode"
 
+static int in_panic;
 static void *dload_mode_addr;
 static bool dload_mode_enabled;
 static void *emergency_dload_mode_addr;
@@ -90,6 +79,8 @@ static struct kobject dload_kobj;
 static void *dload_type_addr;
 
 static int dload_set(const char *val, struct kernel_param *kp);
+static int __init oem_dload_set(char *str);// ramdump set by fastboot oem command
+
 /* interface for exporting attributes */
 struct reset_attribute {
 	struct attribute        attr;
@@ -106,6 +97,19 @@ struct reset_attribute {
 
 module_param_call(download_mode, dload_set, param_get_int,
 			&download_mode, 0644);
+
+__setup("download_mode=", oem_dload_set);//20151105, AlanChiu@FIH ramdump set by fastboot oem command
+
+static int panic_prep_restart(struct notifier_block *this,
+			      unsigned long event, void *ptr)
+{
+	in_panic = 1;
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block panic_blk = {
+	.notifier_call	= panic_prep_restart,
+};
 
 int scm_set_dload_mode(int arg1, int arg2)
 {
@@ -153,8 +157,10 @@ static bool get_dload_mode(void)
 	return dload_mode_enabled;
 }
 
+#if 0
 static void enable_emergency_dload_mode(void)
 {
+#ifdef support_qcom_edl
 	int ret;
 
 	if (emergency_dload_mode_addr) {
@@ -176,7 +182,11 @@ static void enable_emergency_dload_mode(void)
 	ret = scm_set_dload_mode(SCM_EDLOAD_MODE, 0);
 	if (ret)
 		pr_err("Failed to set secure EDLOAD mode: %d\n", ret);
+#else
+  pr_err("dload mode is not enabled on target\n");
+#endif
 }
+#endif
 
 static int dload_set(const char *val, struct kernel_param *kp)
 {
@@ -198,6 +208,24 @@ static int dload_set(const char *val, struct kernel_param *kp)
 
 	return 0;
 }
+//20151105, @OEM ramdump set by fastboot oem command
+static int __init oem_dload_set(char *str)
+{
+    int old_val = download_mode; 
+    get_option(&str, &download_mode);
+
+
+    if(download_mode != 0 && download_mode != 1){
+        download_mode = old_val;
+        return -EINVAL;
+    }
+    
+    pr_err("******%s check download_mode %d\n", __func__,download_mode);
+	set_dload_mode(download_mode);
+
+    return 1;
+}
+
 #else
 static void set_dload_mode(int on)
 {
@@ -280,6 +308,9 @@ static void msm_restart_prepare(const char *cmd)
 			(in_panic || restart_mode == RESTART_DLOAD));
 #endif
 
+	need_warm_reset = (get_dload_mode() ||
+				(cmd != NULL && cmd[0] != '\0'));
+
 	if (qpnp_pon_check_hard_reset_stored()) {
 		/* Set warm reset as true when device is in dload mode */
 		if (get_dload_mode() ||
@@ -292,9 +323,8 @@ static void msm_restart_prepare(const char *cmd)
 				strcmp(cmd, "userrequested")));
 	}
 
-#ifdef CONFIG_MSM_PRESERVE_MEM
+
 	need_warm_reset = true;
-#endif
 
 	/* Hard reset the PMIC unless memory contents must be maintained. */
 	if (need_warm_reset) {
@@ -304,6 +334,7 @@ static void msm_restart_prepare(const char *cmd)
 	}
 
 	if (cmd != NULL) {
+		pr_info("%s: cmd = (%s)\n", __func__, cmd);
 		if (!strncmp(cmd, "bootloader", 10)) {
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_BOOTLOADER);
@@ -335,8 +366,10 @@ static void msm_restart_prepare(const char *cmd)
 			if (!ret)
 				__raw_writel(0x6f656d00 | (code & 0xff),
 					     restart_reason);
+#if 0
 		} else if (!strncmp(cmd, "edl", 3)) {
 			enable_emergency_dload_mode();
+#endif
 		} else {
 			__raw_writel(0x77665501, restart_reason);
 		}
@@ -501,12 +534,11 @@ static int msm_restart_probe(struct platform_device *pdev)
 	struct device_node *np;
 	int ret = 0;
 
-	atomic_notifier_chain_register(&panic_notifier_list, &panic_blk);
-
 #ifdef CONFIG_MSM_DLOAD_MODE
 	if (scm_is_call_available(SCM_SVC_BOOT, SCM_DLOAD_CMD) > 0)
 		scm_dload_supported = true;
 
+	atomic_notifier_chain_register(&panic_notifier_list, &panic_blk);
 	np = of_find_compatible_node(NULL, NULL, DL_MODE_PROP);
 	if (!np) {
 		pr_err("unable to find DT imem DLOAD mode node\n");

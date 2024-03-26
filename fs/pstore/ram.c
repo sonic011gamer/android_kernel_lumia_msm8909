@@ -34,7 +34,6 @@
 #include <linux/slab.h>
 #include <linux/compiler.h>
 #include <linux/pstore_ram.h>
-#include <linux/of.h>
 
 #define RAMOOPS_KERNMSG_HDR "===="
 #define MIN_MEM_SIZE 4096UL
@@ -44,7 +43,8 @@ module_param(record_size, ulong, 0400);
 MODULE_PARM_DESC(record_size,
 		"size of each dump done on oops/panic");
 
-static ulong ramoops_console_size = MIN_MEM_SIZE;
+//static ulong ramoops_console_size = MIN_MEM_SIZE;
+static ulong ramoops_console_size = 256*1024UL;
 module_param_named(console_size, ramoops_console_size, ulong, 0400);
 MODULE_PARM_DESC(console_size, "size of kernel console log");
 
@@ -56,12 +56,15 @@ static ulong ramoops_pmsg_size = MIN_MEM_SIZE;
 module_param_named(pmsg_size, ramoops_pmsg_size, ulong, 0400);
 MODULE_PARM_DESC(pmsg_size, "size of user space message log");
 
-static ulong mem_address;
+//pstore reserved memory is defined in "arch\arm\boot\dts\qcom\msm8909-memory-pstore.dtsi"
+//static ulong mem_address;
+static ulong mem_address=0x8e300000;
 module_param(mem_address, ulong, 0400);
 MODULE_PARM_DESC(mem_address,
 		"start of reserved RAM used to store oops/panic logs");
 
-static ulong mem_size;
+//static ulong mem_size;
+static ulong mem_size=0x100000;
 module_param(mem_size, ulong, 0400);
 MODULE_PARM_DESC(mem_size,
 		"size of reserved RAM used to store oops/panic logs");
@@ -155,7 +158,7 @@ static int ramoops_read_kmsg_hdr(char *buffer, struct timespec *time,
 {
 	char data_type;
 	int header_length = 0;
-
+	
 	if (sscanf(buffer, RAMOOPS_KERNMSG_HDR "%lu.%lu-%c\n%n", &time->tv_sec,
 			&time->tv_nsec, &data_type, &header_length) == 3) {
 		if (data_type == 'C')
@@ -304,17 +307,6 @@ static int notrace ramoops_pstore_write_buf(enum pstore_type_id type,
 
 	prz = cxt->przs[cxt->dump_write_cnt];
 
-	/*
-	 * Since this is a new crash dump, we need to reset the buffer in
-	 * case it still has an old dump present. Without this, the new dump
-	 * will get appended, which would seriously confuse anything trying
-	 * to check dump file contents. Specifically, ramoops_read_kmsg_hdr()
-	 * expects to find a dump header in the beginning of buffer data, so
-	 * we must to reset the buffer values, in order to ensure that the
-	 * header will be written to the beginning of the buffer.
-	 */
-	persistent_ram_zap(prz);
-
 	hlen = ramoops_write_kmsg_hdr(prz, compressed);
 	if (size + hlen > prz->buffer_size)
 		size = prz->buffer_size - hlen;
@@ -390,14 +382,13 @@ static void ramoops_free_przs(struct ramoops_context *cxt)
 {
 	int i;
 
+	cxt->max_dump_cnt = 0;
 	if (!cxt->przs)
 		return;
 
-	for (i = 0; i < cxt->max_dump_cnt; i++)
+	for (i = 0; !IS_ERR_OR_NULL(cxt->przs[i]); i++)
 		persistent_ram_free(cxt->przs[i]);
-
 	kfree(cxt->przs);
-	cxt->max_dump_cnt = 0;
 }
 
 static int ramoops_init_przs(struct device *dev, struct ramoops_context *cxt,
@@ -422,7 +413,7 @@ static int ramoops_init_przs(struct device *dev, struct ramoops_context *cxt,
 			     GFP_KERNEL);
 	if (!cxt->przs) {
 		dev_err(dev, "failed to initialize a prz array for dumps\n");
-		goto fail_mem;
+		goto fail_prz;
 	}
 
 	for (i = 0; i < cxt->max_dump_cnt; i++) {
@@ -435,11 +426,6 @@ static int ramoops_init_przs(struct device *dev, struct ramoops_context *cxt,
 			err = PTR_ERR(cxt->przs[i]);
 			dev_err(dev, "failed to request mem region (0x%zx@0x%llx): %d\n",
 				sz, (unsigned long long)*paddr, err);
-
-			while (i > 0) {
-				i--;
-				persistent_ram_free(cxt->przs[i]);
-			}
 			goto fail_prz;
 		}
 		*paddr += sz;
@@ -447,9 +433,7 @@ static int ramoops_init_przs(struct device *dev, struct ramoops_context *cxt,
 
 	return 0;
 fail_prz:
-	kfree(cxt->przs);
-fail_mem:
-	cxt->max_dump_cnt = 0;
+	ramoops_free_przs(cxt);
 	return err;
 }
 
@@ -490,90 +474,14 @@ void notrace ramoops_console_write_buf(const char *buf, size_t size)
 	persistent_ram_write(cxt->cprz, buf, size);
 }
 
-#ifdef CONFIG_OF
-static struct of_device_id ramoops_of_match[] = {
-	{ .compatible = "ramoops", },
-	{ },
-};
-
-MODULE_DEVICE_TABLE(of, ramoops_of_match);
-static void  ramoops_of_init(struct platform_device *pdev)
-{
-	const struct device *dev = &pdev->dev;
-	struct ramoops_platform_data *pdata;
-	struct device_node *np = pdev->dev.of_node;
-	u32 start = 0, size = 0, console = 0, pmsg = 0;
-	u32 record = 0, oops = 0;
-	int ret;
-
-	pdata = dev_get_drvdata(dev);
-	if (!pdata) {
-		pr_err("private data is empty!\n");
-		return;
-	}
-	ret = of_property_read_u32(np, "android,ramoops-buffer-start",
-				&start);
-	if (ret)
-		return;
-
-	ret = of_property_read_u32(np, "android,ramoops-buffer-size",
-				&size);
-	if (ret)
-		return;
-
-	ret = of_property_read_u32(np, "android,ramoops-console-size",
-				&console);
-	if (ret)
-		return;
-
-	ret = of_property_read_u32(np, "android,ramoops-pmsg-size",
-				&pmsg);
-	if (ret)
-		pr_info("pmsg buffer not configured");
-
-	ret = of_property_read_u32(np, "android,ramoops-record-size",
-				&record);
-	if (ret)
-		pr_info("record buffer not configured");
-
-	ret = of_property_read_u32(np, "android,ramoops-dump-oops",
-				&oops);
-	if (ret)
-		pr_info("oops not configured");
-
-	pdata->mem_address = start;
-	pdata->mem_size = size;
-	pdata->console_size = console;
-	pdata->pmsg_size = pmsg;
-	pdata->record_size = record;
-	pdata->dump_oops = (int)oops;
-}
-#else
-static inline void ramoops_of_init(struct platform_device *pdev)
-{
-	return;
-}
-#endif
-
 static int ramoops_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct ramoops_platform_data *pdata;
+	struct ramoops_platform_data *pdata = pdev->dev.platform_data;
 	struct ramoops_context *cxt = &oops_cxt;
 	size_t dump_mem_sz;
 	phys_addr_t paddr;
 	int err = -EINVAL;
-
-	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
-	if (!pdata) {
-		pr_err("could not allocate ramoops_platform_data\n");
-		return -ENOMEM;
-	}
-
-	dev_set_drvdata(dev, pdata);
-
-	if (pdev->dev.of_node)
-		ramoops_of_init(pdev);
 
 	/* Only a single ramoops area allowed at a time, so fail extra
 	 * probes.
@@ -661,9 +569,6 @@ static int ramoops_probe(struct platform_device *pdev)
 	mem_address = pdata->mem_address;
 	record_size = pdata->record_size;
 	dump_oops = pdata->dump_oops;
-	ramoops_console_size = pdata->console_size;
-	ramoops_pmsg_size = pdata->pmsg_size;
-	ramoops_ftrace_size = pdata->ftrace_size;
 
 	pr_info("attached 0x%lx@0x%llx, ecc: %d/%d\n",
 		cxt->size, (unsigned long long)cxt->phys_addr,
@@ -697,6 +602,7 @@ static int __exit ramoops_remove(struct platform_device *pdev)
 
 	iounmap(cxt->virt_addr);
 	release_mem_region(cxt->phys_addr, cxt->size);
+	cxt->max_dump_cnt = 0;
 
 	/* TODO(kees): When pstore supports unregistering, call it here. */
 	kfree(cxt->pstore.buf);
@@ -712,7 +618,6 @@ static struct platform_driver ramoops_driver = {
 	.remove		= __exit_p(ramoops_remove),
 	.driver		= {
 		.name	= "ramoops",
-		.of_match_table = of_match_ptr(ramoops_of_match),
 		.owner	= THIS_MODULE,
 	},
 };
